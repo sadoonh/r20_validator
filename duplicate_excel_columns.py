@@ -18,7 +18,7 @@ from openpyxl.utils import (
     get_column_letter,
     range_boundaries,
 )
-from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.worksheet.table import Table, TableColumn, TableStyleInfo
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
@@ -107,6 +107,34 @@ def _unique_table_name(workbook) -> str:
     return name
 
 
+def _remap_sort_state(sort_state, table_start: int, table_end: int) -> None:
+    if sort_state is None:
+        return
+    if sort_state.ref:
+        sort_state.ref = _remap_formula(
+            sort_state.ref, table_start, table_end
+        )
+    for condition in sort_state.sortCondition:
+        condition.ref = _remap_formula(
+            condition.ref, table_start, table_end
+        )
+
+
+def _shift_unrelated_table(
+    table: Table, table_start: int, table_end: int
+) -> None:
+    table.ref = _remap_formula(table.ref, table_start, table_end)
+    if table.autoFilter:
+        if table.autoFilter.ref:
+            table.autoFilter.ref = _remap_formula(
+                table.autoFilter.ref, table_start, table_end
+            )
+        _remap_sort_state(
+            table.autoFilter.sortState, table_start, table_end
+        )
+    _remap_sort_state(table.sortState, table_start, table_end)
+
+
 def duplicate_columns(
     input_path: Path, sheet_name: str | None, header_row: int = 1
 ) -> Path:
@@ -117,21 +145,60 @@ def duplicate_columns(
         raise ValueError(
             f"Header row must be between 1 and {worksheet.max_row}; got {header_row}"
         )
-    if worksheet.tables:
-        raise ValueError("The selected worksheet already contains an Excel table.")
 
     source_max_column = worksheet.max_column
     source_max_row = worksheet.max_row
-    populated_header_columns = [
-        column
-        for column in range(1, source_max_column + 1)
-        if worksheet.cell(header_row, column).value not in (None, "")
+    existing_tables = list(worksheet.tables.values())
+    matching_tables = [
+        table
+        for table in existing_tables
+        if range_boundaries(table.ref)[1] == header_row
     ]
-    if not populated_header_columns:
-        raise ValueError("The selected header row is empty.")
+    if len(matching_tables) > 1:
+        raise ValueError(
+            "Multiple Excel tables start on the selected header row. "
+            "Choose a row with a single table."
+        )
 
-    table_start = populated_header_columns[0]
-    table_end = populated_header_columns[-1]
+    selected_table = matching_tables[0] if matching_tables else None
+    if selected_table:
+        table_start, _, table_end, table_bottom = range_boundaries(
+            selected_table.ref
+        )
+        if table_bottom == header_row:
+            raise ValueError("No data rows were found below the selected header.")
+    else:
+        populated_header_columns = [
+            column
+            for column in range(1, source_max_column + 1)
+            if worksheet.cell(header_row, column).value not in (None, "")
+        ]
+        if not populated_header_columns:
+            raise ValueError("The selected header row is empty.")
+        table_start = populated_header_columns[0]
+        table_end = populated_header_columns[-1]
+
+        table_bottom = header_row
+        for row in range(source_max_row, header_row, -1):
+            if any(
+                worksheet.cell(row, column).value not in (None, "")
+                for column in range(table_start, table_end + 1)
+            ):
+                table_bottom = row
+                break
+        if table_bottom == header_row:
+            raise ValueError("No data rows were found below the selected header.")
+
+    unrelated_tables = [
+        table for table in existing_tables if table is not selected_table
+    ]
+    for table in unrelated_tables:
+        min_column, _, max_column, _ = range_boundaries(table.ref)
+        if min_column <= table_end and max_column >= table_start:
+            raise ValueError(
+                f'Excel table "{table.displayName}" intersects the selected columns.'
+            )
+
     source_headers: list[str] = []
     for column in range(table_start, table_end + 1):
         value = worksheet.cell(header_row, column).value
@@ -142,17 +209,6 @@ def duplicate_columns(
     normalized_headers = [header.casefold() for header in source_headers]
     if len(normalized_headers) != len(set(normalized_headers)):
         raise ValueError("Excel table column names must be unique.")
-
-    table_bottom = header_row
-    for row in range(source_max_row, header_row, -1):
-        if any(
-            worksheet.cell(row, column).value not in (None, "")
-            for column in range(table_start, table_end + 1)
-        ):
-            table_bottom = row
-            break
-    if table_bottom == header_row:
-        raise ValueError("No data rows were found below the selected header.")
 
     table_column_count = table_end - table_start + 1
     source_dimensions = {
@@ -222,6 +278,7 @@ def duplicate_columns(
     worksheet.sheet_properties.outlinePr.summaryRight = True
     worksheet.sheet_view.showOutlineSymbols = True
     variance_columns: list[int] = []
+    helper_headers: list[tuple[str, str]] = []
 
     for index, source_header in enumerate(source_headers):
         original_column = table_start + (index * 3)
@@ -250,6 +307,7 @@ def duplicate_columns(
 
         control_header = unique_helper_header(f"{source_header}_control")
         variance_header = unique_helper_header(f"{source_header}_variance")
+        helper_headers.append((control_header, variance_header))
         original_header_cell = worksheet.cell(header_row, original_column)
         original_header_cell.value = source_header
         original_header_cell.protection = Protection(locked=False, hidden=False)
@@ -394,15 +452,68 @@ def duplicate_columns(
         f"{get_column_letter(table_start)}{header_row}:"
         f"{get_column_letter(table_right)}{table_bottom}"
     )
-    table = Table(displayName=_unique_table_name(workbook), ref=table_ref)
-    table.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    worksheet.add_table(table)
+    if selected_table:
+        original_columns = list(selected_table.tableColumns)
+        if len(original_columns) != table_column_count:
+            raise ValueError(
+                f'Excel table "{selected_table.displayName}" has inconsistent '
+                "column metadata."
+            )
+
+        rebuilt_columns: list[TableColumn] = []
+        for index, (source_header, helper_names) in enumerate(
+            zip(source_headers, helper_headers)
+        ):
+            original_column = copy(original_columns[index])
+            original_column.id = len(rebuilt_columns) + 1
+            original_column.name = source_header
+            rebuilt_columns.append(original_column)
+            for helper_name in helper_names:
+                rebuilt_columns.append(
+                    TableColumn(
+                        id=len(rebuilt_columns) + 1,
+                        name=helper_name,
+                    )
+                )
+        rebuilt_columns.append(
+            TableColumn(id=len(rebuilt_columns) + 1, name=overall_header)
+        )
+
+        selected_table.ref = table_ref
+        selected_table.tableColumns = rebuilt_columns
+        if selected_table.autoFilter:
+            if selected_table.autoFilter.ref:
+                _, filter_top, _, filter_bottom = range_boundaries(
+                    selected_table.autoFilter.ref
+                )
+            else:
+                filter_top, filter_bottom = header_row, table_bottom
+            selected_table.autoFilter.ref = (
+                f"{get_column_letter(table_start)}{filter_top}:"
+                f"{get_column_letter(table_right)}{filter_bottom}"
+            )
+            for filter_column in selected_table.autoFilter.filterColumn:
+                if 0 <= filter_column.colId < table_column_count:
+                    filter_column.colId *= 3
+            _remap_sort_state(
+                selected_table.autoFilter.sortState,
+                table_start,
+                table_end,
+            )
+        _remap_sort_state(selected_table.sortState, table_start, table_end)
+    else:
+        table = Table(displayName=_unique_table_name(workbook), ref=table_ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        worksheet.add_table(table)
+
+    for table in unrelated_tables:
+        _shift_unrelated_table(table, table_start, table_end)
 
     # Sheet protection is required for locked helper cells. Formatting columns
     # remains allowed so users can expand/collapse the outline groups.

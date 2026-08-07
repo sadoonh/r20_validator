@@ -52,8 +52,47 @@ class ExistingTableTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(rebuilt.autoFilter.filterColumn[0].colId, 3)
-            self.assertEqual(result_sheet["C2"].value, "=A2=B2")
-            self.assertEqual(result_sheet["G2"].value, "=AND(C2,F2)")
+            for coordinate in ("B1", "B2", "E1", "E2"):
+                self.assertEqual(result_sheet[coordinate].fill.fill_type, "solid")
+                self.assertEqual(
+                    result_sheet[coordinate].fill.fgColor.rgb, "FFD9D9D9"
+                )
+            self.assertIn("ISNA(A2)", result_sheet["C2"].value)
+            self.assertIn("IFERROR(A2=B2,FALSE)", result_sheet["C2"].value)
+            self.assertEqual(
+                result_sheet["G2"].value,
+                '=IF(OR(C2<>"",F2<>""),'
+                'AND(IF(C2="",TRUE,C2),IF(F2="",TRUE,F2)),"")',
+            )
+
+    def test_missing_values_produce_blank_controls_and_variances(self) -> None:
+        with TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.append(["Blank", "Error", "FormulaError", "FormulaBlank"])
+            worksheet.append([None, "#N/A", "=NA()", '=""'])
+            worksheet.add_table(Table(displayName="MissingValues", ref="A1:D2"))
+            workbook.save(input_path)
+
+            output_path = duplicate_columns(input_path, None, header_row=1)
+            result_sheet = load_workbook(output_path, data_only=False).active
+
+            self.assertIsNone(result_sheet["B2"].value)
+            self.assertIsNone(result_sheet["E2"].value)
+            self.assertEqual(result_sheet["H2"].value, '=IFNA(NA(),"")')
+            self.assertEqual(result_sheet["K2"].value, '=IFNA("","")')
+            for coordinate in ("C2", "F2", "I2", "L2"):
+                formula = result_sheet[coordinate].value
+                self.assertTrue(formula.startswith("=IF(AND("))
+                self.assertIn('),"",IFERROR(', formula)
+
+            self.assertEqual(
+                result_sheet["M2"].value,
+                '=IF(OR(C2<>"",F2<>"",I2<>"",L2<>""),'
+                'AND(IF(C2="",TRUE,C2),IF(F2="",TRUE,F2),'
+                'IF(I2="",TRUE,I2),IF(L2="",TRUE,L2)),"")',
+            )
 
     def test_shifts_an_unrelated_table_to_the_right(self) -> None:
         with TemporaryDirectory() as directory:

@@ -40,6 +40,7 @@ from textual.widgets import (
 CELL_REFERENCE = re.compile(r"(?<![A-Z0-9_])(\$?)([A-Z]{1,3})(\$?\d+)")
 TRUE_FILL = PatternFill("solid", fgColor="FFC6EFCE")
 FALSE_FILL = PatternFill("solid", fgColor="FFFFC7CE")
+CONTROL_FILL = PatternFill("solid", fgColor="FFD9D9D9")
 
 
 def _target_column(column: int, table_start: int, table_end: int) -> int:
@@ -61,6 +62,36 @@ def _remap_formula(formula: str, table_start: int, table_end: int) -> str:
         return f"{match.group(1)}{new_column}{match.group(3)}"
 
     return CELL_REFERENCE.sub(replace_reference, formula)
+
+
+def _is_missing_value(value: object) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, str) and (
+        value == "" or value.upper() == "#N/A"
+    )
+
+
+def _control_value(value: object) -> object:
+    if _is_missing_value(value):
+        return None
+    if isinstance(value, str) and value.startswith("="):
+        return f'=IFNA({value[1:]},"")'
+    return value
+
+
+def _missing_formula(reference: str) -> str:
+    return (
+        f'OR(IFERROR({reference}="",FALSE),ISNA({reference}),'
+        f'IFERROR({reference}="#N/A",FALSE))'
+    )
+
+
+def _variance_formula(original: str, control: str) -> str:
+    return (
+        f"=IF(AND({_missing_formula(original)},{_missing_formula(control)}),"
+        f'"",IFERROR({original}={control},FALSE))'
+    )
 
 
 def _write_cell(target, value, style, hyperlink, comment) -> None:
@@ -312,14 +343,16 @@ def duplicate_columns(
         original_header_cell.value = source_header
         original_header_cell.protection = Protection(locked=False, hidden=False)
         header_style = copy(original_header_cell._style)
+        control_header_cell = worksheet.cell(header_row, control_column)
         _set_cell(
-            worksheet.cell(header_row, control_column),
+            control_header_cell,
             control_header,
             header_style,
             None,
             None,
             locked=True,
         )
+        control_header_cell.fill = copy(CONTROL_FILL)
         _set_cell(
             worksheet.cell(header_row, variance_column),
             variance_header,
@@ -337,33 +370,36 @@ def duplicate_columns(
             variance = worksheet.cell(row, variance_column)
             _set_cell(
                 control,
-                original.value,
+                _control_value(original.value),
                 style,
                 original.hyperlink,
                 original.comment,
                 locked=True,
             )
+            control.fill = copy(CONTROL_FILL)
             _set_cell(
                 variance,
-                f"={original_letter}{row}={control_letter}{row}",
+                _variance_formula(
+                    f"{original_letter}{row}", f"{control_letter}{row}"
+                ),
                 style,
                 None,
                 None,
                 locked=True,
             )
             variance.number_format = "General"
-            variance.fill = copy(TRUE_FILL)
 
         variance_range = (
             f"{variance_letter}{header_row + 1}:"
             f"{variance_letter}{table_bottom}"
         )
+        variance_reference = f"${variance_letter}{header_row + 1}"
         worksheet.conditional_formatting.add(
             variance_range,
             FormulaRule(
                 formula=[
-                    f"${original_letter}{header_row + 1}="
-                    f"${control_letter}{header_row + 1}"
+                    f'IFERROR(AND({variance_reference}<>"",'
+                    f"{variance_reference}=TRUE),FALSE)"
                 ],
                 fill=TRUE_FILL,
                 stopIfTrue=True,
@@ -373,8 +409,8 @@ def duplicate_columns(
             variance_range,
             FormulaRule(
                 formula=[
-                    f"${original_letter}{header_row + 1}<>"
-                    f"${control_letter}{header_row + 1}"
+                    f'IFERROR(AND({variance_reference}<>"",'
+                    f"{variance_reference}=FALSE),FALSE)"
                 ],
                 fill=FALSE_FILL,
                 stopIfTrue=True,
@@ -406,34 +442,39 @@ def duplicate_columns(
     )
 
     for row in range(header_row + 1, table_bottom + 1):
-        variance_references = ",".join(
+        variance_references = [
             f"{get_column_letter(column)}{row}" for column in variance_columns
-        )
+        ]
+        has_variance = "OR(" + ",".join(
+            f'{reference}<>""' for reference in variance_references
+        ) + ")"
+        all_matching = "AND(" + ",".join(
+            f'IF({reference}="",TRUE,{reference})'
+            for reference in variance_references
+        ) + ")"
         overall = worksheet.cell(row, overall_column)
         overall_style = copy(worksheet.cell(row, table_start)._style)
         _set_cell(
             overall,
-            f"=AND({variance_references})",
+            f'=IF({has_variance},{all_matching},"")',
             overall_style,
             None,
             None,
             locked=False,
         )
         overall.number_format = "General"
-        overall.fill = copy(TRUE_FILL)
 
     overall_range = (
         f"{overall_letter}{header_row + 1}:{overall_letter}{table_bottom}"
     )
-    first_data_row = header_row + 1
-    overall_and_formula = "AND(" + ",".join(
-        f"${get_column_letter(column)}{first_data_row}"
-        for column in variance_columns
-    ) + ")"
+    overall_reference = f"${overall_letter}{header_row + 1}"
     worksheet.conditional_formatting.add(
         overall_range,
         FormulaRule(
-            formula=[overall_and_formula],
+            formula=[
+                f'IFERROR(AND({overall_reference}<>"",'
+                f"{overall_reference}=TRUE),FALSE)"
+            ],
             fill=TRUE_FILL,
             stopIfTrue=True,
         ),
@@ -441,7 +482,10 @@ def duplicate_columns(
     worksheet.conditional_formatting.add(
         overall_range,
         FormulaRule(
-            formula=[f"NOT({overall_and_formula})"],
+            formula=[
+                f'IFERROR(AND({overall_reference}<>"",'
+                f"{overall_reference}=FALSE),FALSE)"
+            ],
             fill=FALSE_FILL,
             stopIfTrue=True,
         ),

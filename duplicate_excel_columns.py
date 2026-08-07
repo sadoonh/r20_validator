@@ -76,7 +76,8 @@ def _control_value(value: object) -> object:
     if _is_missing_value(value):
         return None
     if isinstance(value, str) and value.startswith("="):
-        return f'=IFNA({value[1:]},"")'
+        expression = value[1:]
+        return f'=IF(ISNA({expression}),"",{expression})'
     return value
 
 

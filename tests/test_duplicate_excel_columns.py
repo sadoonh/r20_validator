@@ -80,8 +80,12 @@ class ExistingTableTests(unittest.TestCase):
 
             self.assertIsNone(result_sheet["B2"].value)
             self.assertIsNone(result_sheet["E2"].value)
-            self.assertEqual(result_sheet["H2"].value, '=IFNA(NA(),"")')
-            self.assertEqual(result_sheet["K2"].value, '=IFNA("","")')
+            self.assertEqual(
+                result_sheet["H2"].value, '=IF(ISNA(NA()),"",NA())'
+            )
+            self.assertEqual(
+                result_sheet["K2"].value, '=IF(ISNA(""),"","")'
+            )
             for coordinate in ("C2", "F2", "I2", "L2"):
                 formula = result_sheet[coordinate].value
                 self.assertTrue(formula.startswith("=IF(AND("))

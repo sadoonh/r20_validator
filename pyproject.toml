@@ -1,0 +1,13 @@
+[project]
+name = "excel-column-duplicator"
+version = "0.1.0"
+description = "Textual prototype for adding Excel control and variance columns"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1,<4",
+    "pandas>=2.3.3",
+    "textual>=8.2.8",
+]
+
+[tool.uv]
+package = false

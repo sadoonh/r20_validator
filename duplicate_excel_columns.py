@@ -87,10 +87,20 @@ def _missing_formula(reference: str) -> str:
     )
 
 
+def _comparison_available_formula(original: str, control: str) -> str:
+    return (
+        f"NOT(AND({_missing_formula(original)},{_missing_formula(control)}))"
+    )
+
+
+def _values_match_formula(original: str, control: str) -> str:
+    return f"IFERROR({original}={control},FALSE)"
+
+
 def _variance_formula(original: str, control: str) -> str:
     return (
         f"=IF(AND({_missing_formula(original)},{_missing_formula(control)}),"
-        f'"",IFERROR({original}={control},FALSE))'
+        f'"",{_values_match_formula(original, control)})'
     )
 
 
@@ -393,14 +403,18 @@ def duplicate_columns(
             f"{variance_letter}{header_row + 1}:"
             f"{variance_letter}{table_bottom}"
         )
-        variance_reference = f"${variance_letter}{header_row + 1}"
+        conditional_original = f"${original_letter}{header_row + 1}"
+        conditional_control = f"${control_letter}{header_row + 1}"
+        comparison_available = _comparison_available_formula(
+            conditional_original, conditional_control
+        )
+        values_match = _values_match_formula(
+            conditional_original, conditional_control
+        )
         worksheet.conditional_formatting.add(
             variance_range,
             FormulaRule(
-                formula=[
-                    f'IFERROR(AND({variance_reference}<>"",'
-                    f"{variance_reference}=TRUE),FALSE)"
-                ],
+                formula=[f"AND({comparison_available},{values_match})"],
                 fill=TRUE_FILL,
                 stopIfTrue=True,
             ),
@@ -408,10 +422,7 @@ def duplicate_columns(
         worksheet.conditional_formatting.add(
             variance_range,
             FormulaRule(
-                formula=[
-                    f'IFERROR(AND({variance_reference}<>"",'
-                    f"{variance_reference}=FALSE),FALSE)"
-                ],
+                formula=[f"AND({comparison_available},NOT({values_match}))"],
                 fill=FALSE_FILL,
                 stopIfTrue=True,
             ),
@@ -467,14 +478,36 @@ def duplicate_columns(
     overall_range = (
         f"{overall_letter}{header_row + 1}:{overall_letter}{table_bottom}"
     )
-    overall_reference = f"${overall_letter}{header_row + 1}"
+    first_data_row = header_row + 1
+    overall_comparisons: list[tuple[str, str]] = []
+    for index in range(table_column_count):
+        original_reference = (
+            f"${get_column_letter(table_start + (index * 3))}{first_data_row}"
+        )
+        control_reference = (
+            f"${get_column_letter(table_start + (index * 3) + 1)}"
+            f"{first_data_row}"
+        )
+        overall_comparisons.append(
+            (
+                _comparison_available_formula(
+                    original_reference, control_reference
+                ),
+                _values_match_formula(original_reference, control_reference),
+            )
+        )
+
+    any_comparison = "OR(" + ",".join(
+        available for available, _ in overall_comparisons
+    ) + ")"
+    all_comparisons_match = "AND(" + ",".join(
+        f"IF({available},{matches},TRUE)"
+        for available, matches in overall_comparisons
+    ) + ")"
     worksheet.conditional_formatting.add(
         overall_range,
         FormulaRule(
-            formula=[
-                f'IFERROR(AND({overall_reference}<>"",'
-                f"{overall_reference}=TRUE),FALSE)"
-            ],
+            formula=[f"AND({any_comparison},{all_comparisons_match})"],
             fill=TRUE_FILL,
             stopIfTrue=True,
         ),
@@ -482,10 +515,7 @@ def duplicate_columns(
     worksheet.conditional_formatting.add(
         overall_range,
         FormulaRule(
-            formula=[
-                f'IFERROR(AND({overall_reference}<>"",'
-                f"{overall_reference}=FALSE),FALSE)"
-            ],
+            formula=[f"AND({any_comparison},NOT({all_comparisons_match}))"],
             fill=FALSE_FILL,
             stopIfTrue=True,
         ),

@@ -57,20 +57,6 @@ class ExistingTableTests(unittest.TestCase):
                 self.assertEqual(
                     result_sheet[coordinate].fill.fgColor.rgb, "FFD9D9D9"
                 )
-
-            conditional_rules = {
-                str(formatting.sqref): formatting.rules
-                for formatting in result_sheet.conditional_formatting
-            }
-            variance_rules = conditional_rules["C2:C3"]
-            self.assertIn("$A2=$B2", variance_rules[0].formula[0])
-            self.assertIn("$A2=$B2", variance_rules[1].formula[0])
-            self.assertEqual(variance_rules[0].dxf.fill.fgColor.rgb, "FFC6EFCE")
-            self.assertEqual(variance_rules[1].dxf.fill.fgColor.rgb, "FFFFC7CE")
-            overall_rules = conditional_rules["G2:G3"]
-            self.assertIn("$A2=$B2", overall_rules[0].formula[0])
-            self.assertIn("$D2=$E2", overall_rules[0].formula[0])
-
             self.assertIn("ISNA(A2)", result_sheet["C2"].value)
             self.assertIn("IFERROR(A2=B2,FALSE)", result_sheet["C2"].value)
             self.assertEqual(

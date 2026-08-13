@@ -38,8 +38,8 @@ from textual.widgets import (
 
 
 CELL_REFERENCE = re.compile(r"(?<![A-Z0-9_])(\$?)([A-Z]{1,3})(\$?\d+)")
-TRUE_FILL = PatternFill("solid", fgColor="FFC6EFCE")
-FALSE_FILL = PatternFill("solid", fgColor="FFFFC7CE")
+TRUE_FILL = PatternFill(patternType="solid", fgColor="FFC6EFCE", bgColor="FFC6EFCE")
+FALSE_FILL = PatternFill(patternType="solid", fgColor="FFFFC7CE", bgColor="FFFFC7CE")
 CONTROL_FILL = PatternFill("solid", fgColor="FFD9D9D9")
 
 

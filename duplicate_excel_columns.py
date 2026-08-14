@@ -36,6 +36,8 @@ from textual.widgets import (
     Static,
 )
 
+from excel_audit import install_audit_log
+
 
 CELL_REFERENCE = re.compile(r"(?<![A-Z0-9_])(\$?)([A-Z]{1,3})(\$?\d+)")
 TRUE_FILL = PatternFill(patternType="solid", fgColor="FFC6EFCE", bgColor="FFC6EFCE")
@@ -717,6 +719,7 @@ class HeaderPickerScreen(Screen[None]):
             output_path = duplicate_columns(
                 self.file_path, self.sheet_name, header_row
             )
+            output_path = install_audit_log(output_path)
         except Exception as error:
             self.app.call_from_thread(self.show_error, str(error))
             return
